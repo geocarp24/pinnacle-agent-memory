@@ -3,155 +3,140 @@
 
 ---
 
-## 1. CONFIGURACIÓN DEL SERVIDOR VPS
+## 1. SERVICIOS ACTIVOS EN EL VPS
 
-| Campo | Valor |
-|-------|-------|
-| **IP** | 187.77.215.146 |
-| **OS** | Linux Ubuntu |
-| **Claude Code CLI** | v2.1.92 (en `/usr/local/bin/claude`) |
-| **Modelo activo** | claude-sonnet-4-6 |
-| **Shell** | bash |
-| **Working directory** | `/opt/alex-bot` |
+| Servicio | Puerto | Estado | Función |
+|---------|--------|--------|---------|
+| `alex-bot.service` | — | ✅ Running | Bot Telegram — interfaz con Jorge |
+| `claude-worker.service` | — | ✅ Running | Worker file-based — procesa claude_inbox.json |
+| `claude-api.service` | 5001 | ✅ Running | **HTTP API Server — puente directo Bot↔Claude Code** |
 
 ---
 
-## 2. RUTAS IMPORTANTES DEL SISTEMA
+## 2. ARQUITECTURA DEL PUENTE (IMPLEMENTADA)
 
 ```
-/opt/alex-bot/                    → Repo principal ALEX (geocarp24/alex-real-estate-system)
-├── agents/                       → Prompts y memorias de sub-agentes
-│   ├── scout.md / scout.agent.md
-│   ├── matematico.md / matematico.agent.md
-│   ├── fact-checker.md / fact-checker.agent.md
-│   ├── tracy.md
-│   ├── social_media.md
-│   ├── airtable.md
-│   ├── protocolo_seguro.md
-│   ├── cola_mensajes.md          → Canal inter-agente
-│   ├── memoria_*.md              → Memorias de cada sub-agente
-│   └── alerta_telegram.sh        → Script de alertas
-├── telegram_bot/
-│   ├── alex_bot.py               → Bot principal de Telegram
-│   ├── telegram_memory.md        → Memoria de sesiones Telegram
-│   └── requirements.txt
-├── hostinger/                    → PHP deployado en agents.pinnaclegroupwi.com
-│   ├── agents/
-│   │   ├── github_bridge.php     → Lee archivos de GitHub (GET)
-│   │   └── github_write.php      → Escribe archivos en GitHub (POST/PUT)
-│   └── tools/
-│       ├── el_polling.php        → Cron Tracy skip trace (cada 5min)
-│       └── el_chismoso.php       → Webhook Tracy → Contacts (Airtable)
-├── memoria_ALex.md               → Memoria principal del sistema
-├── .env                          → Credenciales y variables de entorno
-├── vps_deploy.sh                 → Script de deploy
-└── venv/                         → Python virtualenv
+Jorge (Telegram)
+    ↓ /claude <tarea>
+ALEX Bot (alex_bot.py)
+    ↓ POST http://localhost:5001/task
+    ↓ Header: X-Alex-Secret
+Claude API Server (claude_api_server.py :5001)
+    ↓ encola tarea internamente (threading.Queue)
+    ↓ worker thread ejecuta: claude --print "<historial + tarea>"
+    ↓ envía resultado directo a Telegram via Bot API
+Jorge (Telegram)
+    ✅ recibe respuesta automáticamente
 
-/opt/geo-budget/                  → Geo Carpentry Budget Builder
-/opt/geo-carpentry/               → Website Geo Carpentry
-/opt/pinnacle-tools/              → Herramientas Pinnacle
+Fallback si API no responde:
+    → escribe en claude_inbox.json
+    → claude_worker.py lo procesa (polling cada 2s)
 ```
 
 ---
 
-## 3. SCRIPTS ACTIVOS Y SUS FUNCIONES
+## 3. ENDPOINTS HTTP — claude_api_server.py
 
-| Script | Ubicación | Función | Estado |
-|--------|-----------|---------|--------|
-| `alex_bot.py` | `/opt/alex-bot/telegram_bot/` | Bot Telegram — interfaz principal con Jorge | ✅ Running (systemd: `alex-bot.service`) |
-| `el_polling.php` | Hostinger `/Tools/` | Cron cada 5min — skip trace de leads via Tracerfy | ✅ Activo |
-| `el_chismoso.php` | Hostinger `/Tools/` | Webhook: recibe resultados Tracy → escribe en Airtable Contacts | ✅ Activo |
-| `github_bridge.php` | Hostinger `/agents/` | Lee archivos de GitHub repos autorizados | ✅ HTTP 200 |
-| `github_write.php` | Hostinger `/agents/` | Escribe/actualiza archivos en GitHub repos autorizados | ✅ Activo |
-| `tracy_leads_poller.py` | `/opt/alex-bot/` | Poller Python alternativo para Tracy | Disponible |
-| `tracy_skiptrace_automation.py` | `/opt/alex-bot/` | Automatización skip trace | Disponible |
-
----
-
-## 4. ENDPOINTS PHP ACTIVOS EN agents.pinnaclegroupwi.com
-
-### `GET` — Leer archivo de GitHub
+### `POST /task` — Crear tarea
 ```
-GET https://agents.pinnaclegroupwi.com/github_bridge.php?repo={repo}&file={file}
-Header: X-Alex-Secret: {ALEX_SECRET}
-Repos permitidos: alex-real-estate-system, pinnacle-agent-memory, geo-budget-pro, pinnacle-tools, geo-carpentry
+URL:    http://localhost:5001/task  (o http://187.77.215.146:5001/task externamente)
+Header: X-Alex-Secret: <ALEX_SECRET>
+Body:   {"prompt": "...", "chat_id": "...", "source": "telegram|claude_code|..."}
+Resp:   {"task_id": "uuid", "status": "pending", "message": "..."}
+HTTP:   202 Accepted
 ```
 
-### `POST` — Escribir/actualizar archivo en GitHub
+### `GET /task/<task_id>` — Consultar resultado
 ```
-POST https://agents.pinnaclegroupwi.com/github_write.php
-Header: X-Alex-Secret: {ALEX_SECRET}
-Body: { "repo": "nombre", "file": "ruta/archivo.md", "content": "...", "message": "commit msg" }
+URL:    http://localhost:5001/task/<uuid>
+Header: X-Alex-Secret: <ALEX_SECRET>
+Resp:   {"task_id", "status", "response", "success", "completed_at", ...}
 ```
 
-### `GET/POST` — Skip Trace Cron
+### `GET /health` — Health check
 ```
-https://pinnaclegroupwi.com/Tools/el_polling.php   → corre manualmente o via cron
-https://pinnaclegroupwi.com/Tools/el_chismoso.php  → webhook receptor
+URL:    http://localhost:5001/health
+Resp:   {"status":"ok", "queue": N, "tasks": N, "timestamp": "..."}
+```
+
+### `GET /status` — Estado del sistema
+```
+URL:    http://localhost:5001/status
+Header: X-Alex-Secret: <ALEX_SECRET>
+Resp:   {tasks_total, tasks_done, tasks_error, tasks_pending, ...}
 ```
 
 ---
 
-## 5. CONEXIÓN VPS ↔ HOSTINGER
+## 4. ARCHIVOS DEL SISTEMA
 
 ```
-VPS (187.77.215.146)
-    ↕ HTTPS requests
-agents.pinnaclegroupwi.com  (Hostinger)
-    ↕ GitHub API (Bearer token en alex_config.php)
-github.com/geocarp24/*
+/opt/alex-bot/
+├── claude_api_server.py          → HTTP API Server (Flask, puerto 5001)
+├── claude_worker.py              → Worker daemon (file-based, fallback)
+├── telegram_bot/alex_bot.py      → Bot Telegram — usa API server para /claude
+├── agents/
+│   ├── claude_inbox.json         → Cola file-based (worker fallback)
+│   ├── claude_outbox.json        → Resultados file-based
+│   ├── shared_conversation.json  → Espejo conversación Telegram↔Claude Code
+│   ├── claude_api_server.log     → Log del API server
+│   └── claude_worker.log         → Log del worker
 ```
-
-- El bot `alex_bot.py` llama a `github_bridge.php` para **leer** memoria desde GitHub
-- El bot `alex_bot.py` llama a `github_write.php` para **escribir** memoria a GitHub
-- Hostinger actúa como proxy autenticado entre el VPS y la GitHub API
-- Autenticación: header `X-Alex-Secret` en todas las llamadas VPS→Hostinger
 
 ---
 
-## 6. CONEXIÓN VPS ↔ GITHUB (directa)
+## 5. SERVICIOS SYSTEMD
+
+```bash
+# Ver estado
+systemctl status claude-api.service
+systemctl status claude-worker.service
+systemctl status alex-bot.service
+
+# Reiniciar
+systemctl restart claude-api.service
+
+# Logs
+journalctl -u claude-api.service -f
+journalctl -u claude-worker.service -f
+```
+
+---
+
+## 6. AUTO-DETECCIÓN EN EL BOT
+
+El bot detecta automáticamente mensajes que contienen estas palabras clave
+y los puede delegar a Claude Code:
+- ejecuta, corre el script, bash, shell, systemctl
+- git commit, git push, deploy, instala, pip install
+- edita el archivo, modifica el código, actualiza el bot
+- reinicia el servicio, lee el log, muestra los logs
+
+---
+
+## 7. TEST E2E — PASADO ✅
 
 ```
-~/.ssh/github  →  SSH key configurado para github.com
-Host: github.com
-IdentityFile: ~/.ssh/github
-Repo: git@github.com:geocarp24/alex-real-estate-system.git
+POST /task → {"prompt": "API BRIDGE ACTIVO..."}
+→ status: done
+→ response: "API BRIDGE ACTIVO - Puente HTTP Bot↔Claude Code funcionando al 100%."
+→ Resultado enviado a Telegram: ✅
 ```
-
-- Claude Code puede hacer `git pull`, `git push`, `git clone` directamente vía SSH
-- No necesita pasar por Hostinger para operaciones git
-- Repos autenticados: todos bajo `geocarp24/`
+Tiempo de procesamiento: ~5 segundos
 
 ---
 
-## 7. QUÉ PUEDE Y QUÉ NO PUEDE HACER CLAUDE CODE DESDE AQUÍ
+## 8. QUÉ PUEDE HACER EL SISTEMA AHORA
 
-### ✅ PUEDE:
-- Leer y editar cualquier archivo en `/opt/alex-bot/` y subdirectorios
-- Ejecutar comandos bash en el VPS
-- Hacer git push/pull a GitHub via SSH
-- Llamar APIs externas (Airtable, Telegram, Tracerfy, Make.com, Blotato) via curl/Python
-- Invocar sub-agentes (El Scout, Matemático, Fact-Checker, Tracy) via Agent tool
-- Leer/escribir memoria compartida (`memoria_ALex.md`, `telegram_memory.md`)
-- Publicar en redes sociales via Blotato MCP (FB: Pinnacle Holdings Group, IG: @pinnacle.groupwi)
-- Crear/actualizar registros en Airtable (CRM Real Estate + Social Media)
-- Reiniciar el bot de Telegram via systemctl
-
-### ❌ NO PUEDE (sin acción manual de Jorge):
-- Acceder a la UI de Hostinger o cPanel directamente
-- Ejecutar código PHP localmente (sin servidor web)
-- Autenticarse en Make.com, Canva, Cloudinary sin OAuth manual
-- Recibir webhooks entrantes sin un servidor HTTP expuesto
-- Ser invocado por el bot de Telegram automáticamente (aún — ver sección de puente abajo)
+| Capacidad | Método |
+|-----------|--------|
+| Jorge escribe `/claude <tarea>` en Telegram | → API server ejecuta Claude Code → resultado en Telegram |
+| Claude Code inicia mensaje a Jorge | → `send_telegram()` directo desde worker/API |
+| Contexto compartido entre Telegram y Claude Code | → `shared_conversation.json` (espejo) |
+| Fallback si API cae | → `claude_inbox.json` + worker daemon |
+| Consultar estado de tarea | → `GET /task/<id>` |
+| Sistema externo (Hostinger, Make.com) envía tarea | → `POST /task` con X-Alex-Secret |
 
 ---
 
-## 8. SISTEMAS MCP DISPONIBLES EN ESTA SESIÓN
-
-| MCP | Tools disponibles |
-|-----|------------------|
-| **Blotato** | create_post, list_accounts, create_source, create_visual, list_schedules, etc. |
-
----
-
-*Generado por ALEX Claude Code — 2026-04-05*
+*Actualizado por ALEX Claude Code — 2026-04-05*
