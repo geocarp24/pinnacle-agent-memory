@@ -1,7 +1,6 @@
 # COLA DE MENSAJES — ALEX Bot ↔ Claude Code
 
-> Canal de comunicación bidireccional entre ALEX Telegram Bot (VPS) y Claude Code (CLI).
-> Última actualización: 2026-04-05
+> Última actualización: 2026-04-05 | Estado: PUENTE ACTIVO ✅
 
 ---
 
@@ -9,151 +8,71 @@
 
 | Componente | Estado | Ubicación |
 |-----------|--------|-----------|
-| ALEX Telegram Bot | ✅ Activo | VPS 187.77.215.146, systemd |
-| Claude Code CLI | ✅ Disponible | VPS 187.77.215.146, /usr/local/bin/claude |
+| ALEX Telegram Bot | ✅ Activo | VPS 187.77.215.146, systemd `alex-bot.service` |
+| Claude Code CLI | ✅ Disponible | VPS 187.77.215.146, `/usr/local/bin/claude` |
+| **Claude Worker** | ✅ **ACTIVO** | VPS, systemd `claude-worker.service` |
 | Bridge Hostinger | ✅ HTTP 200 | agents.pinnaclegroupwi.com |
-| GitHub (puente de estado) | ✅ Activo | geocarp24/pinnacle-agent-memory |
+| Espejo conversación | ✅ Activo | `agents/shared_conversation.json` |
 
 ---
 
-## ARQUITECTURA DEL PUENTE BOT ↔ CLAUDE CODE
-
-### Problema actual
-El Bot de Telegram corre como proceso systemd (`alex-bot.service`). Claude Code corre como proceso interactivo separado. No tienen comunicación directa — Jorge tiene que copiar y pegar resultados entre ambos.
-
-### Solución propuesta: Puente via archivos + systemd
+## ARQUITECTURA IMPLEMENTADA
 
 ```
 Jorge (Telegram)
-    ↓ mensaje: "/claude <tarea>"
+    ↓ /claude <tarea>
 ALEX Bot (alex_bot.py)
-    ↓ escribe tarea en /opt/alex-bot/agents/claude_inbox.json
-    ↓ ejecuta: claude --print "<prompt>" en subprocess
-Claude Code CLI
-    ↓ procesa la tarea
-    ↓ escribe resultado en /opt/alex-bot/agents/claude_outbox.json
-ALEX Bot
-    ↓ lee claude_outbox.json
-    ↓ envía respuesta a Jorge via Telegram
+    ↓ escribe en claude_inbox.json  {"task_id", "prompt", "chat_id", "status":"pending"}
+    ↓ responde: "📨 Tarea encolada..."
+claude_worker.py  (systemd, corre cada 2s)
+    ↓ detecta status:pending
+    ↓ ejecuta: claude --print "<historial + tarea>"
+    ↓ escribe resultado en claude_outbox.json
+    ↓ envía resultado directo a Telegram via Bot API
+Jorge (Telegram)
+    ✅ recibe respuesta automáticamente
 ```
-
-### Mecanismo de implementación
-
-**Opción A — subprocess directo (recomendada para tareas rápidas):**
-```python
-import subprocess
-result = subprocess.run(
-    ["claude", "--print", prompt],
-    capture_output=True, text=True, timeout=120,
-    cwd="/opt/alex-bot"
-)
-response = result.stdout
-```
-
-**Opción B — archivo de cola (para tareas largas o asíncronas):**
-```
-/opt/alex-bot/agents/
-├── claude_inbox.json    → Bot escribe tareas aquí
-├── claude_outbox.json   → Claude Code escribe resultados aquí
-└── claude_status.json   → Estado: idle | processing | done | error
-```
-
-Un watcher script (`claude_worker.py`) corre en background y procesa el inbox continuamente.
-
-**Opción C — GitHub como cola (sin dependencia de procesos locales):**
-```
-Bot escribe tarea → este archivo (cola_mensajes.md) en GitHub
-Claude Code lee → procesa → escribe resultado en GitHub
-Bot lee resultado → responde a Jorge
-```
-Esta opción ya funciona parcialmente con el bridge existente.
 
 ---
 
-## PLAN DE IMPLEMENTACIÓN — PUENTE DIRECTO
+## FASE 1 ✅ — subprocess /claude
+- Implementado: 2026-04-05
+- Archivo: `telegram_bot/alex_bot.py`
+- Estado: Reemplazado por Fase 2 (ahora usa inbox asíncrono)
 
-### FASE 1: subprocess simple (1-2 horas de trabajo)
+## FASE 2 ✅ — Cola asíncrona con worker daemon
+- Implementado: 2026-04-05
+- Worker: `/opt/alex-bot/claude_worker.py`
+- Servicio: `/etc/systemd/system/claude-worker.service`
+- Inbox: `/opt/alex-bot/agents/claude_inbox.json`
+- Outbox: `/opt/alex-bot/agents/claude_outbox.json`
+- Espejo: `/opt/alex-bot/agents/shared_conversation.json`
+- Test: ✅ PASADO — "PUENTE ACTIVO" confirmado
 
-**Archivos a modificar:**
-- `/opt/alex-bot/telegram_bot/alex_bot.py` — agregar comando `/claude`
-
-**Lógica a agregar en alex_bot.py:**
-```python
-@bot.message_handler(commands=['claude'])
-def handle_claude_task(message):
-    task = message.text.replace('/claude ', '', 1)
-    bot.send_message(message.chat.id, "⏳ Claude Code procesando...")
-    
-    result = subprocess.run(
-        ["claude", "--print", task],
-        capture_output=True, text=True, timeout=180,
-        cwd="/opt/alex-bot",
-        env={**os.environ, "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY")}
-    )
-    
-    response = result.stdout if result.returncode == 0 else f"Error: {result.stderr}"
-    bot.send_message(message.chat.id, response[:4000])  # Telegram limit
-```
-
-**Resultado:** Jorge escribe `/claude <tarea>` en Telegram → ALEX Bot llama a Claude Code → respuesta en Telegram.
-
----
-
-### FASE 2: Cola asíncrona con watcher (3-4 horas)
-
-**Archivos nuevos:**
-- `/opt/alex-bot/claude_worker.py` — daemon que procesa cola
-- `/etc/systemd/system/claude-worker.service` — servicio systemd
-- `/opt/alex-bot/agents/claude_inbox.json` — cola de entrada
-- `/opt/alex-bot/agents/claude_outbox.json` — cola de salida
-
-**Flujo:**
-1. Bot escribe en `claude_inbox.json`: `{"task_id": "uuid", "prompt": "...", "chat_id": 123}`
-2. `claude_worker.py` detecta nueva tarea → ejecuta Claude Code → escribe en `claude_outbox.json`
-3. Bot monitorea `claude_outbox.json` → envía resultado a Telegram
-
-**Ventaja:** Claude Code puede procesar tareas largas sin timeout de Telegram.
-
----
-
-### FASE 3: Bidireccional completo (futuro)
-
-Claude Code también puede **iniciar** conversaciones con Jorge via Telegram:
-```python
-# Desde Claude Code / sub-agentes:
-import requests
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-JORGE_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-    json={"chat_id": JORGE_CHAT_ID, "text": mensaje})
-```
-
-Ya existe `alerta_telegram.sh` que hace exactamente esto — puede usarse como base.
-
----
-
-## PRIORIDAD DE IMPLEMENTACIÓN
-
-| Fase | Esfuerzo | Impacto | Prioridad |
-|------|---------|---------|-----------|
-| Fase 1 — subprocess `/claude` | Bajo (1-2h) | Alto | 🔴 PRIMERO |
-| Fase 2 — cola asíncrona | Medio (3-4h) | Alto | 🟡 SEGUNDO |
-| Fase 3 — Claude inicia Telegram | Bajo (30min) | Medio | 🟢 TERCERO |
+## FASE 3 ✅ — Bidireccional (Claude → Telegram)
+- Implementado dentro de `claude_worker.py`
+- Worker envía resultados directamente via `https://api.telegram.org/bot.../sendMessage`
+- No depende del bot para enviar — comunicación directa
 
 ---
 
 ## MENSAJES ACTIVOS EN COLA
 
-*(Vacío — sistema inicializado 2026-04-05)*
+*(Ver claude_inbox.json en el VPS)*
 
 ---
 
 ## HISTORIAL
 
-| Fecha | Mensaje | Estado |
-|-------|---------|--------|
-| 2026-04-05 | Sistema documentado. Puente propuesto. | ✅ |
+| Fecha | Acción | Estado |
+|-------|--------|--------|
+| 2026-04-05 | Sistema documentado | ✅ |
+| 2026-04-05 | Fase 1 — subprocess /claude | ✅ |
+| 2026-04-05 | Fase 2 — worker daemon + inbox/outbox | ✅ |
+| 2026-04-05 | Fase 3 — bidireccional worker→Telegram | ✅ |
+| 2026-04-05 | Espejo shared_conversation.json | ✅ |
+| 2026-04-05 | Test E2E — PUENTE ACTIVO confirmado | ✅ |
 
 ---
 
-*Generado por ALEX Claude Code — 2026-04-05*
+*Actualizado por ALEX Claude Code — 2026-04-05*
