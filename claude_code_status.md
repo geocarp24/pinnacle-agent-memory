@@ -1,121 +1,61 @@
 # CLAUDE CODE STATUS — Sistema ALEX
-> Última actualización: 2026-04-05 | VPS: 187.77.215.146
+> Última actualización: 2026-04-06 | VPS: 187.77.215.146
 
 ---
 
-## SERVICIOS ACTIVOS (4 servicios)
+## SERVICIOS ACTIVOS (4 servicios — todos running)
 
-| Servicio | Puerto | Estado | Función |
-|---------|--------|--------|--------|
-| `alex-bot.service` | — | ✅ Running | Bot Telegram — interfaz con Jorge |
-| `claude-worker.service` | — | ✅ Running | Worker file-based — fallback local |
-| `claude-api.service` | 5001 | ✅ Running | HTTP API Server — puente directo Bot↔Claude Code |
-| `github-monitor.service` | — | ✅ Running | **Monitor 24/7 — lee task_queue.json en GitHub cada 30s** |
-
----
-
-## FLUJO COMPLETO — Jorge nunca más abre Claude Code
-
-```
-Jorge escribe en Telegram: /tarea <descripción>
-    ↓
-ALEX Bot escribe en GitHub: task_queue.json {status: pendiente}
-    ↓
-github-monitor (VPS, cada 30s) detecta tarea pendiente
-    ↓
-Cambia status → en_proceso (escribe en GitHub)
-    ↓
-Ejecuta: claude --print "<tarea>" (Claude Code CLI)
-    ↓
-Cambia status → completado + result (escribe en GitHub)
-    ↓
-Escribe resumen en memoria_ALex.md
-    ↓
-Envía resultado directo a Jorge en Telegram
-    ✅ COMPLETADO
-```
+| Servicio | Estado | Función |
+|---------|--------|---------|
+| alex-bot.service | ✅ Running | Bot Telegram — /claude /tarea /start /reset |
+| claude-worker.service | ✅ Running | Worker file-based — fallback local |
+| claude-api.service :5001 | ✅ Running | HTTP API — puente directo Bot↔Claude Code |
+| github-monitor.service | ✅ Running | Monitor 24/7 — task_queue.json + memoria_ALex.md |
 
 ---
 
-## COMANDOS TELEGRAM DISPONIBLES
+## BLOTATO — CUENTAS CONECTADAS ✅
 
-| Comando | Función |
-|---------|--------|
-| `/tarea <desc>` | Escribe en GitHub queue → Monitor ejecuta → Telegram |
-| `/claude <desc>` | HTTP API local (puerto 5001) → Claude Code → Telegram |
-| `/start` | Saludo de ALEX |
-| `/reset` | Limpiar historial |
-| `/guardar` | Guardar memoria |
-| `/memoria` | Ver memoria |
+| Plataforma | Account ID | Detalle | Uso |
+|-----------|-----------|---------|-----|
+| Facebook | 25638 | Jorge Cruz | Cuenta principal |
+| ↳ Page | 965320503341457 | Pinnacle Holdings Group | ✅ ACTIVA — usar por defecto |
+| ↳ Page | 877737568755522 | Geocroficial | 🔒 Reservada |
+| ↳ Page | 723873447473999 | Geo Carpentry | 🔒 Reservada |
+| Instagram | 39285 | @pinnacle.groupwi | ✅ ACTIVA |
 
----
-
-## ENDPOINTS HTTP (claude_api_server.py :5001)
-
-```
-POST http://localhost:5001/task          → crear tarea
-GET  http://localhost:5001/task/<id>     → consultar resultado
-GET  http://localhost:5001/health        → health check
-GET  http://localhost:5001/status        → métricas
-Auth: X-Alex-Secret header requerido
-```
+**API Key:** En /opt/alex-bot/.env como BLOTATO_API_KEY
+**Configurado:** 2026-04-06
 
 ---
 
-## ARCHIVOS DEL SISTEMA
+## FLUJO COMPLETO — Sin abrir Claude Code nunca más
 
-```
-/opt/alex-bot/
-├── github_monitor.py          → Monitor GitHub 24/7 (NUEVO)
-├── claude_api_server.py       → HTTP API Server :5001
-├── claude_worker.py           → Worker file-based (fallback)
-├── telegram_bot/alex_bot.py   → Bot con /tarea y /claude
-├── agents/
-│   ├── task_queue.json        → Cola local (fallback)
-│   ├── shared_conversation.json → Espejo Telegram↔Claude Code
-│   ├── github_monitor.log     → Log del monitor
-│   └── claude_api_server.log  → Log del API server
+### Canal 1: /tarea (GitHub Queue)
 
-geocar24/pinnacle-agent-memory (GitHub)
-├── task_queue.json            → COLA PRINCIPAL — Monitor la lee cada 30s
-├── cola_mensajes.md           → Log humano-legible
-└── claude_code_status.md      → Este archivo
-```
+
+### Canal 2: /claude (HTTP API local)
+
+
+### Canal 3: memoria_ALex.md (directo)
+
 
 ---
 
-## TEST E2E — PASADO ✅ 2026-04-05
+## ARCHIVOS CLAVE
 
-```
-Tarea inyectada en task_queue.json: status=pendiente
-Monitor detectó en ~13 segundos
-Ejecutó Claude Code CLI
-Resultado: MONITOR GITHUB ACTIVO - Sistema de monitoreo 24/7 funcionando.
-Status actualizado: completado
-Resultado enviado a Telegram: ✅
-Tiempo total: ~10 segundos de ejecución
-```
+
 
 ---
 
-## COMANDOS DE ADMINISTRACIÓN
+## TEST E2E — 100% PASADO ✅ 2026-04-06
 
-```bash
-# Ver estado de todos los servicios
-systemctl status alex-bot claude-api claude-worker github-monitor
-
-# Ver logs en tiempo real
-journalctl -u github-monitor.service -f
-journalctl -u claude-api.service -f
-
-# Reiniciar monitor
-systemctl restart github-monitor.service
-
-# Ver cola de tareas en GitHub
-curl -s "https://agents.pinnaclegroupwi.com/github_bridge.php?repo=pinnacle-agent-memory&file=task_queue.json" \
-  -H "X-Alex-Secret: $ALEX_SECRET"
-```
+- ✅ task_queue.json detectado y ejecutado (~10s)
+- ✅ memoria_ALex.md scanner: bloques PENDIENTE migrados automáticamente
+- ✅ BLOTATO_API_KEY en .env, cuentas FB/IG verificadas
+- ✅ Resultado enviado a Telegram automáticamente
+- ✅ Confirmación escrita en memoria_ALex.md
 
 ---
 
-*Generado por ALEX Claude Code — 2026-04-05*
+*Actualizado por ALEX Claude Code — 2026-04-06*
